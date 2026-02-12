@@ -5,11 +5,10 @@ import re
 import uuid
 from collections import Counter
 from datetime import datetime
+from dataclasses import dataclass
 from typing import List
 
-from pdf2image import convert_from_bytes
 from pypdf import PdfReader
-import pytesseract
 
 from .schemas import (
     CompanyInfo,
@@ -21,7 +20,13 @@ from .schemas import (
 )
 
 
-def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+@dataclass
+class TextExtractionResult:
+    text: str
+    diagnostics: list[str]
+
+
+def _extract_text_with_pypdf(pdf_bytes: bytes) -> str:
     reader = PdfReader(io.BytesIO(pdf_bytes))
     text_chunks: List[str] = []
 
@@ -30,23 +35,70 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         if page_text.strip():
             text_chunks.append(page_text)
 
-    # Если текстовый слой есть (даже короткий), используем его сразу.
-    # Ранее короткие PDF принудительно отправлялись в OCR, что могло падать
-    # на окружениях без системных OCR-зависимостей (poppler/tesseract).
-    direct_text = "\n".join(text_chunks).strip()
-    if direct_text:
-        return direct_text
+    return "\n".join(text_chunks).strip()
+
+
+def _extract_text_with_pdfminer(pdf_bytes: bytes) -> str:
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract_text
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("pdfminer.six не установлен") from exc
+
+    return (pdfminer_extract_text(io.BytesIO(pdf_bytes)) or "").strip()
+
+
+def extract_text_from_pdf(pdf_bytes: bytes) -> TextExtractionResult:
+    diagnostics: list[str] = []
+
+    # 1) Текстовый слой через pypdf.
+    try:
+        direct_text = _extract_text_with_pypdf(pdf_bytes)
+        if direct_text:
+            diagnostics.append("Текст извлечён из PDF-слоя (pypdf).")
+            return TextExtractionResult(text=direct_text, diagnostics=diagnostics)
+        diagnostics.append("pypdf: текстовый слой не найден.")
+    except Exception as exc:
+        diagnostics.append(f"pypdf: ошибка чтения ({exc}).")
+
+    # 2) Дополнительный fallback для PDF-слоя через pdfminer.
+    try:
+        alt_text = _extract_text_with_pdfminer(pdf_bytes)
+        if alt_text:
+            diagnostics.append("Текст извлечён из PDF-слоя (pdfminer).")
+            return TextExtractionResult(text=alt_text, diagnostics=diagnostics)
+        diagnostics.append("pdfminer: текстовый слой не найден.")
+    except Exception as exc:
+        diagnostics.append(f"pdfminer: ошибка чтения ({exc}).")
+
+    # 3) OCR fallback для сканов.
+    try:
+        from pdf2image import convert_from_bytes
+        from pdf2image.exceptions import PDFInfoNotInstalledError
+        import pytesseract
+        from pytesseract import TesseractNotFoundError
+    except ModuleNotFoundError as exc:
+        diagnostics.append(f"OCR-библиотеки Python не установлены ({exc}).")
+        return TextExtractionResult(text="", diagnostics=diagnostics)
 
     try:
         images = convert_from_bytes(pdf_bytes, dpi=250)
         ocr_text = []
         for image in images:
             ocr_text.append(pytesseract.image_to_string(image, lang="rus+eng"))
-        return "\n".join(ocr_text).strip()
-    except Exception:
-        # Фолбэк: если OCR недоступен, возвращаем пустую строку,
-        # а вызывающий слой покажет понятную ошибку.
-        return ""
+        text = "\n".join(ocr_text).strip()
+        if text:
+            diagnostics.append("Текст извлечён OCR (tesseract).")
+        else:
+            diagnostics.append("OCR выполнен, но текст не найден.")
+        return TextExtractionResult(text=text, diagnostics=diagnostics)
+    except PDFInfoNotInstalledError:
+        diagnostics.append("OCR недоступен: не найден poppler (pdfinfo).")
+    except TesseractNotFoundError:
+        diagnostics.append("OCR недоступен: не найден tesseract.")
+    except Exception as exc:
+        diagnostics.append(f"OCR: внутренняя ошибка ({exc}).")
+
+    return TextExtractionResult(text="", diagnostics=diagnostics)
 
 
 def detect_document_type(text: str) -> DocumentType:
