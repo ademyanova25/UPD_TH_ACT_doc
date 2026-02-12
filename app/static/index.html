@@ -17,11 +17,23 @@
       <h2>1) Загрузка файла</h2>
       <form id="upload-form">
         <label class="file-input">
-          <input id="pdf-file" type="file" accept="application/pdf" required />
+          <input id="pdf-file" type="file" accept="application/pdf" multiple />
           <span>📄 Выбрать PDF</span>
         </label>
-        <button type="submit" class="btn btn-primary">Распознать документ</button>
+
+        <div id="dropzone" class="dropzone">
+          Перетащите PDF сюда (drag & drop) — файлы автоматически добавятся в список ниже.
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">Распознать первый из списка</button>
+          <button id="recognize-all" type="button" class="btn">Распознать все из списка</button>
+        </div>
       </form>
+
+      <h3>Прикреплённые документы (до распознавания)</h3>
+      <ul id="pending-files" class="pending-list"></ul>
+
       <p id="status"></p>
     </section>
 

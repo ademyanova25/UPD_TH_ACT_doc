@@ -1,8 +1,93 @@
 let lastPredicted = null;
 let lastRawText = "";
 let sourceDocumentId = null;
+let pendingFiles = [];
 
 const $ = (id) => document.getElementById(id);
+
+function fileKey(file) {
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
+
+function addPendingFiles(files) {
+  const onlyPdf = [...files].filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+  onlyPdf.forEach((file) => {
+    const key = fileKey(file);
+    if (!pendingFiles.find((item) => item.key === key)) {
+      pendingFiles.push({ key, file });
+    }
+  });
+  renderPendingFiles();
+}
+
+function removePendingFile(key) {
+  pendingFiles = pendingFiles.filter((item) => item.key !== key);
+  renderPendingFiles();
+}
+
+function renderPendingFiles() {
+  const list = $("pending-files");
+  list.innerHTML = "";
+
+  if (!pendingFiles.length) {
+    const li = document.createElement("li");
+    li.textContent = "Пока нет прикреплённых PDF";
+    list.appendChild(li);
+    return;
+  }
+
+  pendingFiles.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span class="pending-file-name">${index + 1}. ${item.file.name}</span>
+      <button type="button" class="remove-file">Убрать</button>
+    `;
+    li.querySelector(".remove-file").onclick = () => removePendingFile(item.key);
+    list.appendChild(li);
+  });
+}
+
+async function recognizeFile(file) {
+  $("status").textContent = `Распознаю: ${file.name}...`;
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch("/documents/upload", { method: "POST", body: formData });
+  if (!response.ok) {
+    throw new Error(`Ошибка распознавания ${file.name}`);
+  }
+
+  const doc = await response.json();
+  lastPredicted = doc;
+  fillDoc(doc);
+  $("status").textContent = `Готово: ${file.name}. Проверьте и при необходимости исправьте поля.`;
+}
+
+async function recognizeFirstPending() {
+  if (!pendingFiles.length) {
+    $("status").textContent = "Добавьте хотя бы один PDF в список";
+    return;
+  }
+  const next = pendingFiles[0];
+  await recognizeFile(next.file);
+  removePendingFile(next.key);
+  await refreshLists();
+}
+
+async function recognizeAllPending() {
+  if (!pendingFiles.length) {
+    $("status").textContent = "Добавьте хотя бы один PDF в список";
+    return;
+  }
+
+  while (pendingFiles.length) {
+    const next = pendingFiles[0];
+    await recognizeFile(next.file);
+    removePendingFile(next.key);
+  }
+  $("status").textContent = "Все прикреплённые документы распознаны";
+  await refreshLists();
+}
 
 function readItems() {
   const rows = [...document.querySelectorAll("#items-body tr")];
@@ -97,24 +182,47 @@ async function refreshLists() {
   });
 }
 
+$("pdf-file").addEventListener("change", (e) => {
+  addPendingFiles(e.target.files);
+  e.target.value = "";
+});
+
+const dropzone = $("dropzone");
+dropzone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropzone.classList.add("drag-over");
+});
+
+dropzone.addEventListener("dragleave", () => {
+  dropzone.classList.remove("drag-over");
+});
+
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("drag-over");
+  addPendingFiles(e.dataTransfer.files);
+});
+
 $("upload-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const file = $("pdf-file").files[0];
-  if (!file) return;
-  $("status").textContent = "Распознаю документ...";
+  try {
+    await recognizeFirstPending();
+  } catch (err) {
+    $("status").textContent = err.message;
+  }
+});
 
-  const formData = new FormData();
-  formData.append("file", file);
-  const doc = await fetch("/documents/upload", { method: "POST", body: formData }).then((r) => r.json());
-  lastPredicted = doc;
-  fillDoc(doc);
-  $("status").textContent = "Готово. Проверьте и при необходимости исправьте поля ниже.";
-  await refreshLists();
+$("recognize-all").addEventListener("click", async () => {
+  try {
+    await recognizeAllPending();
+  } catch (err) {
+    $("status").textContent = err.message;
+  }
 });
 
 $("save-training").addEventListener("click", async () => {
   if (!lastPredicted) {
-    alert("Сначала загрузите и распознайте документ.");
+    alert("Сначала распознайте документ.");
     return;
   }
   const corrected = collectDoc();
@@ -137,4 +245,5 @@ $("save-training").addEventListener("click", async () => {
 });
 
 $("load-docs").addEventListener("click", refreshLists);
+renderPendingFiles();
 refreshLists();
