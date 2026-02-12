@@ -46,7 +46,7 @@
 2. Извлечение текста:
    - `pypdf` (основной text-layer extractor);
    - `pdfminer.six` (дополнительный extractor для сложных PDF);
-   - `pdf2image` + `pytesseract` (OCR fallback для сканов, включая автоповорот страниц и проверку 0/90/180/270);
+   - `pdf2image` + `pytesseract` (OCR fallback для сканов, включая автоповорот страниц, предобработку изображения (gray/autocontrast/threshold/sharpen) и проверку 0/90/180/270);
    - если poppler недоступен, используется встроенный Python-рендерер `pypdfium2` + OCR.
 3. Классификация типа документа + извлечение полей (rule-based).
 4. (Опционально) усиление через LLM-провайдер (`OPENAI_API_KEY`).

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import List
 
 from pypdf import PdfReader
+from PIL import ImageFilter, ImageOps
 
 from .schemas import (
     CompanyInfo,
@@ -50,8 +51,46 @@ def _extract_text_with_pdfminer(pdf_bytes: bytes) -> str:
 
 
 def _text_quality_score(value: str) -> int:
-    # Эвристика для выбора лучшей ориентации: больше букв/цифр = вероятно лучше OCR.
-    return len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]", value))
+    # Эвристика качества OCR: учитываем объём текста и наличие ключевых маркеров первички.
+    normalized = re.sub(r"\s+", " ", value.lower())
+    base = len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]", value))
+
+    bonus = 0
+    for marker in (
+        "универс",
+        "передаточ",
+        "счет-фактур",
+        "инн",
+        "кпп",
+        "продавец",
+        "покупатель",
+        "товар",
+        "услуг",
+        "документ",
+    ):
+        if marker in normalized:
+            bonus += 80
+
+    return base + bonus
+
+
+def _build_preprocessed_variants(image):
+    gray = ImageOps.grayscale(image)
+    autocontrast = ImageOps.autocontrast(gray)
+
+    # Бинаризация помогает для бледных сканов/печати.
+    threshold = autocontrast.point(lambda x: 255 if x > 160 else 0, mode="1").convert("L")
+
+    # Лёгкое повышение резкости для мелкого шрифта.
+    sharpened = autocontrast.filter(ImageFilter.SHARPEN)
+
+    return {
+        "raw": image,
+        "gray": gray,
+        "autocontrast": autocontrast,
+        "threshold": threshold,
+        "sharpened": sharpened,
+    }
 
 
 def _ocr_with_auto_rotate(image, pytesseract_module) -> tuple[str, str]:
@@ -75,16 +114,17 @@ def _ocr_with_auto_rotate(image, pytesseract_module) -> tuple[str, str]:
         candidates[str(angle)] = image.rotate(angle, expand=True)
 
     best_text = ""
-    best_variant = "0"
+    best_variant = "0/raw"
     best_score = -1
 
     for variant, candidate in candidates.items():
-        current_text = pytesseract_module.image_to_string(candidate, lang="rus+eng")
-        score = _text_quality_score(current_text)
-        if score > best_score:
-            best_text = current_text
-            best_variant = variant
-            best_score = score
+        for prep_name, prepared in _build_preprocessed_variants(candidate).items():
+            current_text = pytesseract_module.image_to_string(prepared, lang="rus+eng")
+            score = _text_quality_score(current_text)
+            if score > best_score:
+                best_text = current_text
+                best_variant = f"{variant}/{prep_name}"
+                best_score = score
 
     return best_text.strip(), best_variant
 
