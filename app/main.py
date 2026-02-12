@@ -1,20 +1,42 @@
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from .pipeline import extract_fields, extract_text_from_pdf
 from .providers import NoopProvider, OpenAIExtractionProvider
-from .registry import get_document, init_db, list_documents, save_document
-from .schemas import ExtractedDocument
+from .registry import (
+    create_training_sample,
+    export_training_jsonl,
+    get_document,
+    init_db,
+    list_documents,
+    list_training_samples,
+    save_document,
+)
+from .schemas import ExtractedDocument, TrainingSample, TrainingSampleCreate
 
-app = FastAPI(title="Primary Document Extractor", version="0.1.0")
+app = FastAPI(title="Primary Document Extractor", version="0.2.0")
 
-provider = OpenAIExtractionProvider() if __import__("os").getenv("OPENAI_API_KEY") else NoopProvider()
+provider = OpenAIExtractionProvider() if os.getenv("OPENAI_API_KEY") else NoopProvider()
+
+static_dir = Path(__file__).with_name("static")
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+
+
+@app.get("/", include_in_schema=False)
+def home() -> FileResponse:
+    return FileResponse(static_dir / "index.html")
 
 
 @app.get("/health")
@@ -46,3 +68,34 @@ def document_by_id(doc_id: str) -> ExtractedDocument:
     if not doc:
         raise HTTPException(status_code=404, detail="Документ не найден")
     return doc
+
+
+@app.post("/training/samples", response_model=TrainingSample)
+def add_training_sample(sample: TrainingSampleCreate) -> TrainingSample:
+    return create_training_sample(sample)
+
+
+@app.get("/training/samples", response_model=list[TrainingSample])
+def training_samples() -> list[TrainingSample]:
+    return list_training_samples()
+
+
+@app.get("/training/export", response_class=PlainTextResponse)
+def training_export() -> str:
+    return export_training_jsonl()
+
+
+@app.get("/training/howto")
+def training_howto() -> dict:
+    return {
+        "steps": [
+            "1) Загружайте PDF в /documents/upload.",
+            "2) Проверяйте распознавание в UI и при необходимости исправляйте поля.",
+            "3) Отправляйте исправленный вариант в /training/samples.",
+            "4) Периодически выгружайте датасет через /training/export (JSONL).",
+            "5) Используйте JSONL для дообучения/инструкционного тюнинга выбранной модели.",
+        ],
+        "target_schema": json.loads(
+            '{"document_type":"УПД","supplier":{"name":"","inn":"","kpp":"","address":""},"buyer":{"name":"","inn":"","kpp":"","address":""},"items":[{"name":"","quantity":0,"unit_price":0,"total_price":0}],"signers":[{"role":"","full_name":""}]}'
+        ),
+    }

@@ -43,3 +43,23 @@ class ExtractedDocument(BaseModel):
     signers: List[SignerInfo] = Field(default_factory=list)
     raw_text_excerpt: str = ""
     created_at: datetime
+
+
+class TrainingSampleCreate(BaseModel):
+    filename: str
+    source_document_id: Optional[str] = None
+    raw_text_excerpt: str = ""
+    predicted: ExtractedDocument
+    corrected: ExtractedDocument
+    reviewer_comment: str = ""
+
+
+class TrainingSample(BaseModel):
+    id: str
+    filename: str
+    source_document_id: Optional[str] = None
+    raw_text_excerpt: str = ""
+    predicted: ExtractedDocument
+    corrected: ExtractedDocument
+    reviewer_comment: str = ""
+    created_at: datetime
