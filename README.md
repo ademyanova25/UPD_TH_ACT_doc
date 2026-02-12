@@ -73,6 +73,7 @@ uvicorn app.main:app --reload --port 8000
 ### Документы
 
 - `POST /documents/upload` — загрузка PDF и обработка.
+- `POST /documents/upload-by-url` — обработка PDF по публичной ссылке Yandex.Disk.
 - `PUT /documents/{doc_id}` — обновить документ (после ручных правок).
 - `GET /documents` — список распознанных документов.
 - `GET /documents/{doc_id}` — документ по ID.
@@ -103,3 +104,16 @@ python scripts/check_examples.py
 ```
 
 Скрипт покажет длину извлечённого текста и пошаговую диагностику (`pypdf` -> `pdfminer` -> OCR).
+
+
+### Загрузка по ссылке (Yandex.Disk)
+
+Если PDF нельзя прикрепить в чат/UI, можно передать публичную ссылку Yandex.Disk:
+
+```bash
+curl -X POST http://localhost:8000/documents/upload-by-url \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://disk.yandex.ru/i/XXXXXXXXXXXXXX","filename":"my_upd.pdf"}'
+```
+
+Сервис скачает файл, прогонит стандартный пайплайн распознавания и вернёт структурированный результат.

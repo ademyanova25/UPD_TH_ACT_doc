@@ -63,3 +63,8 @@ class TrainingSample(BaseModel):
     corrected: ExtractedDocument
     reviewer_comment: str = ""
     created_at: datetime
+
+
+class DocumentUrlUpload(BaseModel):
+    url: str
+    filename: Optional[str] = None
