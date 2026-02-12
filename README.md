@@ -26,6 +26,15 @@
 Дополнительно: если распознавание не удалось, UI показывает подробную причину ошибки от backend
 с диагностикой по этапам извлечения (pypdf/pdfminer/OCR). Для OCR поддерживается путь без системного poppler через `pypdfium2`.
 
+В диагностике OCR дополнительно выводятся поля:
+- `text_extraction.pypdf.len`
+- `text_extraction.pdfminer.len`
+- `ocr.used`
+- `ocr.rotation_chosen`
+- `ocr.rotation_scores`
+- `ocr.normalized_excerpt`
+
+
 ## Как теперь работает «обучение»
 
 1. Вы загружаете документ и получаете распознавание.

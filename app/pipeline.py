@@ -48,30 +48,37 @@ def _extract_text_with_pdfminer(pdf_bytes: bytes) -> str:
     return (pdfminer_extract_text(io.BytesIO(pdf_bytes)) or "").strip()
 
 
+KEYWORDS = ["счет-фактура", "статус", "продавец", "покупатель", "инн", "кпп", "руб"]
+
+
+def _normalize_ocr_text(value: str) -> str:
+    normalized = value.lower()
+    return (
+        normalized.replace("o", "0")
+        .replace("о", "0")
+        .replace("|", "1")
+        .replace("l", "1")
+        .replace("i", "1")
+    )
+
+
+def _is_meaningful(text: str, min_chars: int = 50) -> bool:
+    if not text:
+        return False
+    useful = re.sub(r"[^0-9A-Za-zА-Яа-я]+", "", text)
+    return len(useful) >= min_chars
 
 
 def _text_quality_score(value: str) -> int:
-    # Эвристика качества OCR: учитываем объём текста и наличие ключевых маркеров первички.
-    normalized = re.sub(r"\s+", " ", value.lower())
+    # Эвристика качества OCR: учитываем реквизиты/маркеры первички, а не только объём текста.
+    normalized = _normalize_ocr_text(re.sub(r"\s+", " ", value))
     base = len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]", value))
 
-    bonus = 0
-    for marker in (
-        "универс",
-        "передаточ",
-        "счет-фактур",
-        "инн",
-        "кпп",
-        "продавец",
-        "покупатель",
-        "товар",
-        "услуг",
-        "документ",
-    ):
-        if marker in normalized:
-            bonus += 80
+    inn_count = len(re.findall(r"\b\d{10}\b|\b\d{12}\b", normalized))
+    kpp_count = len(re.findall(r"\b\d{9}\b", normalized))
+    keyword_hits = sum(1 for marker in KEYWORDS if marker in normalized)
 
-    return base + bonus
+    return base + (10 * inn_count) + (10 * kpp_count) + (3 * keyword_hits)
 
 
 def _build_preprocessed_variants(image):
@@ -93,7 +100,7 @@ def _build_preprocessed_variants(image):
     }
 
 
-def _ocr_with_auto_rotate(image, pytesseract_module) -> tuple[str, str]:
+def _ocr_with_auto_rotate(image, pytesseract_module) -> tuple[str, str, dict[str, int]]:
     candidates: dict[str, object] = {"0": image}
 
     # 1) Пробуем определить угол автоматически (OSD).
@@ -116,31 +123,44 @@ def _ocr_with_auto_rotate(image, pytesseract_module) -> tuple[str, str]:
     best_text = ""
     best_variant = "0/raw"
     best_score = -1
+    rotation_scores: dict[str, int] = {"0": 0, "90": 0, "180": 0, "270": 0}
 
     for variant, candidate in candidates.items():
+        local_best = -1
         for prep_name, prepared in _build_preprocessed_variants(candidate).items():
-            current_text = pytesseract_module.image_to_string(prepared, lang="rus+eng")
+            current_text = pytesseract_module.image_to_string(
+                prepared,
+                lang="rus+eng",
+                config="--oem 1 --psm 6",
+            )
             score = _text_quality_score(current_text)
+            local_best = max(local_best, score)
             if score > best_score:
                 best_text = current_text
                 best_variant = f"{variant}/{prep_name}"
                 best_score = score
 
-    return best_text.strip(), best_variant
+        angle_key = variant.replace("osd_", "")
+        if angle_key in rotation_scores and local_best > rotation_scores[angle_key]:
+            rotation_scores[angle_key] = local_best
 
-def _ocr_text_from_images(images: list[object], pytesseract_module) -> tuple[str, list[str]]:
+    return best_text.strip(), best_variant, rotation_scores
+
+def _ocr_text_from_images(images: list[object], pytesseract_module) -> tuple[str, list[str], list[dict[str, int]]]:
     ocr_text: list[str] = []
     variants_used: list[str] = []
+    rotation_scores: list[dict[str, int]] = []
 
     for image in images:
-        page_text, used_variant = _ocr_with_auto_rotate(image, pytesseract_module)
+        page_text, used_variant, page_scores = _ocr_with_auto_rotate(image, pytesseract_module)
         ocr_text.append(page_text)
         variants_used.append(used_variant)
+        rotation_scores.append(page_scores)
 
-    return "\n".join(ocr_text).strip(), variants_used
+    return "\n".join(ocr_text).strip(), variants_used, rotation_scores
 
 
-def _ocr_with_pdfium_renderer(pdf_bytes: bytes, pytesseract_module) -> tuple[str, list[str]]:
+def _ocr_with_pdfium_renderer(pdf_bytes: bytes, pytesseract_module) -> tuple[str, list[str], list[dict[str, int]]]:
     import pypdfium2 as pdfium
 
     document = pdfium.PdfDocument(pdf_bytes)
@@ -163,20 +183,22 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> TextExtractionResult:
     # 1) Текстовый слой через pypdf.
     try:
         direct_text = _extract_text_with_pypdf(pdf_bytes)
-        if direct_text:
+        diagnostics.append(f"text_extraction.pypdf.len={len(direct_text)}")
+        if _is_meaningful(direct_text):
             diagnostics.append("Текст извлечён из PDF-слоя (pypdf).")
             return TextExtractionResult(text=direct_text, diagnostics=diagnostics)
-        diagnostics.append("pypdf: текстовый слой не найден.")
+        diagnostics.append("pypdf: текст отсутствует или недостаточно осмысленный -> fallback.")
     except Exception as exc:
         diagnostics.append(f"pypdf: ошибка чтения ({exc}).")
 
     # 2) Дополнительный fallback для PDF-слоя через pdfminer.
     try:
         alt_text = _extract_text_with_pdfminer(pdf_bytes)
-        if alt_text:
+        diagnostics.append(f"text_extraction.pdfminer.len={len(alt_text)}")
+        if _is_meaningful(alt_text):
             diagnostics.append("Текст извлечён из PDF-слоя (pdfminer).")
             return TextExtractionResult(text=alt_text, diagnostics=diagnostics)
-        diagnostics.append("pdfminer: текстовый слой не найден.")
+        diagnostics.append("pdfminer: текст отсутствует или недостаточно осмысленный -> OCR.")
     except Exception as exc:
         diagnostics.append(f"pdfminer: ошибка чтения ({exc}).")
 
@@ -192,29 +214,35 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> TextExtractionResult:
 
     try:
         images = convert_from_bytes(pdf_bytes, dpi=250)
-        text, variants_used = _ocr_text_from_images(images, pytesseract)
-        if text:
+        text, variants_used, rotation_scores = _ocr_text_from_images(images, pytesseract)
+        diagnostics.append("ocr.used=true")
+        diagnostics.append(f"ocr.rotation_chosen={','.join(variants_used)}")
+        diagnostics.append(f"ocr.rotation_scores={rotation_scores}")
+        diagnostics.append(f"ocr.normalized_excerpt={_normalize_ocr_text(text)[:240]}")
+        if _is_meaningful(text, min_chars=30):
             diagnostics.append(
-                "Текст извлечён OCR (tesseract, poppler) с автоповоротом/проверкой ориентаций: "
-                + ", ".join(variants_used)
+                "Текст извлечён OCR (tesseract, poppler) с автоповоротом/предобработкой и оценкой ориентаций."
             )
         else:
             diagnostics.append(
-                "OCR через poppler выполнен (включая автоповорот и проверку 0/90/180/270), но текст не найден."
+                "OCR через poppler выполнен (включая автоповорот/предобработку), но осмысленный текст не найден."
             )
         return TextExtractionResult(text=text, diagnostics=diagnostics)
     except PDFInfoNotInstalledError:
         diagnostics.append("OCR/poppler недоступен: не найден poppler (pdfinfo). Пробуем встроенный рендерер.")
         try:
-            text, variants_used = _ocr_with_pdfium_renderer(pdf_bytes, pytesseract)
-            if text:
+            text, variants_used, rotation_scores = _ocr_with_pdfium_renderer(pdf_bytes, pytesseract)
+            diagnostics.append("ocr.used=true")
+            diagnostics.append(f"ocr.rotation_chosen={','.join(variants_used)}")
+            diagnostics.append(f"ocr.rotation_scores={rotation_scores}")
+            diagnostics.append(f"ocr.normalized_excerpt={_normalize_ocr_text(text)[:240]}")
+            if _is_meaningful(text, min_chars=30):
                 diagnostics.append(
-                    "Текст извлечён OCR (tesseract, pypdfium2) с автоповоротом/проверкой ориентаций: "
-                    + ", ".join(variants_used)
+                    "Текст извлечён OCR (tesseract, pypdfium2) с автоповоротом/предобработкой и оценкой ориентаций."
                 )
             else:
                 diagnostics.append(
-                    "OCR через pypdfium2 выполнен (включая автоповорот и проверку 0/90/180/270), но текст не найден."
+                    "OCR через pypdfium2 выполнен (включая автоповорот/предобработку), но осмысленный текст не найден."
                 )
             return TextExtractionResult(text=text, diagnostics=diagnostics)
         except ModuleNotFoundError as exc:
@@ -237,6 +265,12 @@ def detect_document_type(text: str) -> DocumentType:
         upd_score += 3
     if re.search(r"передаточн\w*\s+документ", normalized):
         upd_score += 2
+    if (
+        re.search(r"счет\s*[-–—]?\s*фактур", normalized)
+        and re.search(r"статус\s*[:№n]?\s*[12]", normalized)
+        and re.search(r"передаточ", normalized)
+    ):
+        upd_score += 4
     if re.search(r"счет\s*[-–—]?\s*фактур", normalized):
         upd_score += 2
     if re.search(r"статус\s*[:№n]?\s*[12]", normalized):
