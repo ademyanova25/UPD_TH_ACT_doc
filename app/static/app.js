@@ -79,8 +79,15 @@ async function recognizeFile(file, completedBefore, total) {
   clearInterval(tick);
 
   if (!response.ok) {
-    logStatus(`Ошибка распознавания: ${file.name}`);
-    throw new Error(`Ошибка распознавания ${file.name}`);
+    let errorDetail = "Неизвестная ошибка";
+    try {
+      const errPayload = await response.json();
+      errorDetail = errPayload?.detail || errorDetail;
+    } catch (_) {
+      // no-op
+    }
+    logStatus(`Ошибка распознавания: ${file.name}. ${errorDetail}`);
+    throw new Error(`Ошибка распознавания ${file.name}: ${errorDetail}`);
   }
 
   const doc = await response.json();

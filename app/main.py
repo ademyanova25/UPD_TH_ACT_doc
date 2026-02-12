@@ -50,7 +50,20 @@ async def upload_document(file: UploadFile = File(...)) -> ExtractedDocument:
         raise HTTPException(status_code=400, detail="Поддерживаются только PDF файлы")
 
     pdf_bytes = await file.read()
-    text = extract_text_from_pdf(pdf_bytes)
+    try:
+        text = extract_text_from_pdf(pdf_bytes)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Ошибка чтения PDF/OCR: {exc}") from exc
+
+    if not text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Не удалось извлечь текст из PDF. "
+                "Проверьте, что файл не повреждён и в окружении установлены OCR-зависимости "
+                "(poppler + tesseract)."
+            ),
+        )
     base_doc = extract_fields(filename=file.filename, text=text)
     enriched = provider.enrich(base_doc)
 

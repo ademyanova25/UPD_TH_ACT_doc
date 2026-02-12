@@ -30,15 +30,23 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         if page_text.strip():
             text_chunks.append(page_text)
 
+    # Если текстовый слой есть (даже короткий), используем его сразу.
+    # Ранее короткие PDF принудительно отправлялись в OCR, что могло падать
+    # на окружениях без системных OCR-зависимостей (poppler/tesseract).
     direct_text = "\n".join(text_chunks).strip()
-    if len(direct_text) > 200:
+    if direct_text:
         return direct_text
 
-    images = convert_from_bytes(pdf_bytes, dpi=250)
-    ocr_text = []
-    for image in images:
-        ocr_text.append(pytesseract.image_to_string(image, lang="rus+eng"))
-    return "\n".join(ocr_text)
+    try:
+        images = convert_from_bytes(pdf_bytes, dpi=250)
+        ocr_text = []
+        for image in images:
+            ocr_text.append(pytesseract.image_to_string(image, lang="rus+eng"))
+        return "\n".join(ocr_text).strip()
+    except Exception:
+        # Фолбэк: если OCR недоступен, возвращаем пустую строку,
+        # а вызывающий слой покажет понятную ошибку.
+        return ""
 
 
 def detect_document_type(text: str) -> DocumentType:
