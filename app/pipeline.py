@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import re
 import uuid
+from collections import Counter
 from datetime import datetime
 from typing import List
 
@@ -16,6 +17,7 @@ from .schemas import (
     ExtractedDocument,
     ItemInfo,
     SignerInfo,
+    TrainingSample,
 )
 
 
@@ -53,6 +55,72 @@ def detect_document_type(text: str) -> DocumentType:
 def _first(pattern: str, text: str) -> str | None:
     match = re.search(pattern, text, flags=re.IGNORECASE)
     return match.group(1).strip() if match else None
+
+
+def _normalize_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    return re.sub(r"\s+", " ", name).strip().lower()
+
+
+def _best_value(values: list[str | None]) -> str | None:
+    cleaned = [v.strip() for v in values if v and v.strip()]
+    if not cleaned:
+        return None
+    return Counter(cleaned).most_common(1)[0][0]
+
+
+def apply_learning_hints(doc: ExtractedDocument, samples: list[TrainingSample]) -> ExtractedDocument:
+    supplier_hints: dict[str, CompanyInfo] = {}
+    buyer_hints: dict[str, CompanyInfo] = {}
+
+    grouped_supplier: dict[str, list[CompanyInfo]] = {}
+    grouped_buyer: dict[str, list[CompanyInfo]] = {}
+
+    for sample in samples:
+        s_name = _normalize_name(sample.corrected.supplier.name)
+        b_name = _normalize_name(sample.corrected.buyer.name)
+        if s_name:
+            grouped_supplier.setdefault(s_name, []).append(sample.corrected.supplier)
+        if b_name:
+            grouped_buyer.setdefault(b_name, []).append(sample.corrected.buyer)
+
+    for name, rows in grouped_supplier.items():
+        supplier_hints[name] = CompanyInfo(
+            name=_best_value([x.name for x in rows]),
+            inn=_best_value([x.inn for x in rows]),
+            kpp=_best_value([x.kpp for x in rows]),
+            address=_best_value([x.address for x in rows]),
+        )
+    for name, rows in grouped_buyer.items():
+        buyer_hints[name] = CompanyInfo(
+            name=_best_value([x.name for x in rows]),
+            inn=_best_value([x.inn for x in rows]),
+            kpp=_best_value([x.kpp for x in rows]),
+            address=_best_value([x.address for x in rows]),
+        )
+
+    supplier_key = _normalize_name(doc.supplier.name)
+    buyer_key = _normalize_name(doc.buyer.name)
+
+    if supplier_key and supplier_key in supplier_hints:
+        hint = supplier_hints[supplier_key]
+        if not doc.supplier.inn:
+            doc.supplier.inn = hint.inn
+        if not doc.supplier.kpp:
+            doc.supplier.kpp = hint.kpp
+        if not doc.supplier.address:
+            doc.supplier.address = hint.address
+    if buyer_key and buyer_key in buyer_hints:
+        hint = buyer_hints[buyer_key]
+        if not doc.buyer.inn:
+            doc.buyer.inn = hint.inn
+        if not doc.buyer.kpp:
+            doc.buyer.kpp = hint.kpp
+        if not doc.buyer.address:
+            doc.buyer.address = hint.address
+
+    return doc
 
 
 def extract_fields(filename: str, text: str) -> ExtractedDocument:

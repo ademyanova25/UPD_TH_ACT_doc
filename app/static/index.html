@@ -27,9 +27,18 @@
 
         <div class="actions">
           <button type="submit" class="btn btn-primary">Распознать первый из списка</button>
-          <button id="recognize-all" type="button" class="btn">Распознать все из списка</button>
+          <button id="recognize-all" type="button" class="btn">Распознать документы</button>
         </div>
       </form>
+
+      <div class="progress-wrap">
+        <div class="progress-head">
+          <strong>Прогресс распознавания:</strong>
+          <span id="progress-label">0%</span>
+        </div>
+        <progress id="batch-progress" max="100" value="0"></progress>
+        <ul id="recognition-log" class="status-log"></ul>
+      </div>
 
       <h3>Прикреплённые документы (до распознавания)</h3>
       <ul id="pending-files" class="pending-list"></ul>
@@ -86,7 +95,7 @@
       </label>
 
       <div class="actions">
-        <button id="save-training" class="btn">Сохранить как обучающий пример</button>
+        <button id="save-training" class="btn">Сохранить правки (в реестр + обучение)</button>
         <button id="load-docs" class="btn">Обновить реестр документов</button>
       </div>
     </section>

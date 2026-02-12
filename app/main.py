@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from .pipeline import extract_fields, extract_text_from_pdf
+from .pipeline import apply_learning_hints, extract_fields, extract_text_from_pdf
 from .providers import NoopProvider, OpenAIExtractionProvider
 from .registry import (
     create_training_sample,
@@ -21,7 +21,7 @@ from .registry import (
 )
 from .schemas import ExtractedDocument, TrainingSample, TrainingSampleCreate
 
-app = FastAPI(title="Primary Document Extractor", version="0.2.0")
+app = FastAPI(title="Primary Document Extractor", version="0.3.0")
 
 provider = OpenAIExtractionProvider() if os.getenv("OPENAI_API_KEY") else NoopProvider()
 
@@ -53,8 +53,20 @@ async def upload_document(file: UploadFile = File(...)) -> ExtractedDocument:
     text = extract_text_from_pdf(pdf_bytes)
     base_doc = extract_fields(filename=file.filename, text=text)
     enriched = provider.enrich(base_doc)
+
+    # Лёгкое "онлайн-обучение": применяем накопленные правки пользователей
+    enriched = apply_learning_hints(enriched, list_training_samples())
+
     save_document(enriched)
     return enriched
+
+
+@app.put("/documents/{doc_id}", response_model=ExtractedDocument)
+def update_document(doc_id: str, payload: ExtractedDocument) -> ExtractedDocument:
+    if payload.id != doc_id:
+        raise HTTPException(status_code=400, detail="ID в URL и body должны совпадать")
+    save_document(payload)
+    return payload
 
 
 @app.get("/documents", response_model=list[ExtractedDocument])
@@ -90,11 +102,15 @@ def training_howto() -> dict:
     return {
         "steps": [
             "1) Загружайте PDF в /documents/upload.",
-            "2) Проверяйте распознавание в UI и при необходимости исправляйте поля.",
-            "3) Отправляйте исправленный вариант в /training/samples.",
-            "4) Периодически выгружайте датасет через /training/export (JSONL).",
-            "5) Используйте JSONL для дообучения/инструкционного тюнинга выбранной модели.",
+            "2) Проверяйте распознавание в UI и правьте поля.",
+            "3) Нажимайте 'Сохранить правки': данные уйдут и в реестр, и в training-set.",
+            "4) Следующие документы будут учитывать накопленные правки контрагентов.",
+            "5) Периодически выгружайте датасет через /training/export (JSONL).",
         ],
+        "auto_learning_note": (
+            "В текущей версии это не full fine-tuning в реальном времени, а автоматическое "
+            "применение накопленных исправлений (ИНН/КПП/адреса контрагентов) к новым документам."
+        ),
         "target_schema": json.loads(
             '{"document_type":"УПД","supplier":{"name":"","inn":"","kpp":"","address":""},"buyer":{"name":"","inn":"","kpp":"","address":""},"items":[{"name":"","quantity":0,"unit_price":0,"total_price":0}],"signers":[{"role":"","full_name":""}]}'
         ),

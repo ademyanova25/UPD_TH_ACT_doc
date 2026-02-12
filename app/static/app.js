@@ -9,12 +9,25 @@ function fileKey(file) {
   return `${file.name}::${file.size}::${file.lastModified}`;
 }
 
+function logStatus(message) {
+  const li = document.createElement("li");
+  li.textContent = `${new Date().toLocaleTimeString()} — ${message}`;
+  $("recognition-log").prepend(li);
+}
+
+function setProgress(percent) {
+  const p = Math.max(0, Math.min(100, Math.round(percent)));
+  $("batch-progress").value = p;
+  $("progress-label").textContent = `${p}%`;
+}
+
 function addPendingFiles(files) {
   const onlyPdf = [...files].filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
   onlyPdf.forEach((file) => {
     const key = fileKey(file);
     if (!pendingFiles.find((item) => item.key === key)) {
       pendingFiles.push({ key, file });
+      logStatus(`Добавлен в очередь: ${file.name}`);
     }
   });
   renderPendingFiles();
@@ -47,19 +60,37 @@ function renderPendingFiles() {
   });
 }
 
-async function recognizeFile(file) {
+async function recognizeFile(file, completedBefore, total) {
+  logStatus(`Начато распознавание: ${file.name}`);
   $("status").textContent = `Распознаю: ${file.name}...`;
+
+  setProgress((completedBefore / total) * 100 + 5);
+
   const formData = new FormData();
   formData.append("file", file);
 
+  const startedAt = Date.now();
+  const tick = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    $("status").textContent = `Распознаю: ${file.name}... ${elapsed} сек`;
+  }, 1000);
+
   const response = await fetch("/documents/upload", { method: "POST", body: formData });
+  clearInterval(tick);
+
   if (!response.ok) {
+    logStatus(`Ошибка распознавания: ${file.name}`);
     throw new Error(`Ошибка распознавания ${file.name}`);
   }
 
   const doc = await response.json();
   lastPredicted = doc;
   fillDoc(doc);
+
+  const newPercent = ((completedBefore + 1) / total) * 100;
+  setProgress(newPercent);
+  logStatus(`Завершено: ${file.name} (${Math.round(newPercent)}%)`);
+
   $("status").textContent = `Готово: ${file.name}. Проверьте и при необходимости исправьте поля.`;
 }
 
@@ -68,8 +99,10 @@ async function recognizeFirstPending() {
     $("status").textContent = "Добавьте хотя бы один PDF в список";
     return;
   }
+
+  const total = pendingFiles.length;
   const next = pendingFiles[0];
-  await recognizeFile(next.file);
+  await recognizeFile(next.file, 0, total);
   removePendingFile(next.key);
   await refreshLists();
 }
@@ -80,12 +113,20 @@ async function recognizeAllPending() {
     return;
   }
 
+  const total = pendingFiles.length;
+  let completed = 0;
+  logStatus(`Запущено пакетное распознавание: ${total} файл(ов)`);
+
   while (pendingFiles.length) {
     const next = pendingFiles[0];
-    await recognizeFile(next.file);
+    await recognizeFile(next.file, completed, total);
     removePendingFile(next.key);
+    completed += 1;
   }
+
+  setProgress(100);
   $("status").textContent = "Все прикреплённые документы распознаны";
+  logStatus("Пакетное распознавание завершено");
   await refreshLists();
 }
 
@@ -225,7 +266,15 @@ $("save-training").addEventListener("click", async () => {
     alert("Сначала распознайте документ.");
     return;
   }
+
   const corrected = collectDoc();
+
+  await fetch(`/documents/${corrected.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(corrected),
+  });
+
   const payload = {
     filename: corrected.filename,
     source_document_id: sourceDocumentId,
@@ -240,10 +289,14 @@ $("save-training").addEventListener("click", async () => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  alert("Сохранено в обучающий набор");
+
+  lastPredicted = corrected;
+  logStatus(`Правки сохранены и добавлены в обучение: ${corrected.filename}`);
+  alert("Сохранено: правки ушли в реестр и в обучающий набор");
   await refreshLists();
 });
 
 $("load-docs").addEventListener("click", refreshLists);
 renderPendingFiles();
+setProgress(0);
 refreshLists();
