@@ -190,19 +190,85 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> TextExtractionResult:
 
 
 def detect_document_type(text: str) -> DocumentType:
-    normalized = text.lower()
-    if "универсаль" in normalized and "передаточ" in normalized:
+    normalized = re.sub(r"\s+", " ", text.lower())
+
+    upd_score = 0
+    if re.search(r"универсал\w*\s+передаточ", normalized):
+        upd_score += 3
+    if re.search(r"передаточн\w*\s+документ", normalized):
+        upd_score += 2
+    if re.search(r"счет\s*[-–—]?\s*фактур", normalized):
+        upd_score += 2
+    if re.search(r"статус\s*[:№n]?\s*[12]", normalized):
+        upd_score += 1
+    if re.search(r"продавец|покупатель", normalized):
+        upd_score += 1
+
+    torg_score = 0
+    if "торг-12" in normalized or "товарная накладная" in normalized:
+        torg_score += 3
+    if re.search(r"грузоотправител|грузополучател", normalized):
+        torg_score += 1
+
+    act_score = 0
+    if re.search(r"акт", normalized):
+        act_score += 1
+    if re.search(r"оказан\w*\s+услуг", normalized):
+        act_score += 2
+
+    best = max(upd_score, torg_score, act_score)
+    if best == 0:
+        return DocumentType.UNKNOWN
+    if best == upd_score:
         return DocumentType.UPD
-    if "товарная накладная" in normalized or "торг-12" in normalized:
+    if best == torg_score:
         return DocumentType.TORG12
-    if "акт" in normalized and "оказан" in normalized and "услуг" in normalized:
-        return DocumentType.SERVICE_ACT
-    return DocumentType.UNKNOWN
+    return DocumentType.SERVICE_ACT
 
 
 def _first(pattern: str, text: str) -> str | None:
     match = re.search(pattern, text, flags=re.IGNORECASE)
     return match.group(1).strip() if match else None
+
+
+def _extract_inn_kpp_pair(text: str, role_pattern: str) -> tuple[str | None, str | None]:
+    pair = re.search(
+        rf"{role_pattern}.{{0,80}}?инн\s*/\s*кпп\s*([0-9]{{10,12}})\s*/\s*([0-9]{{9}})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if pair:
+        return pair.group(1), pair.group(2)
+    return None, None
+
+
+def _extract_items(text: str) -> list[ItemInfo]:
+    items: list[ItemInfo] = []
+    for line in text.splitlines():
+        clean = re.sub(r"\s+", " ", line).strip(" |;	")
+        if len(clean) < 8:
+            continue
+
+        numbers = re.findall(r"\d+[\.,]?\d*", clean)
+        # Строка табличной части обычно содержит и текст, и несколько чисел (кол-во/цена/сумма).
+        if len(numbers) >= 2 and re.search(r"[А-Яа-яA-Za-z]", clean):
+            # Отсеиваем очевидные шапки/служебные фразы.
+            if re.search(r"(инн|кпп|счет|договор|дата|страниц|лист)", clean, flags=re.IGNORECASE):
+                continue
+            items.append(ItemInfo(name=clean))
+
+    return items[:200]
+
+
+def _extract_signers(text: str) -> list[SignerInfo]:
+    signers: list[SignerInfo] = []
+    signer_match = re.findall(
+        r"(?:руководитель|директор|главный бухгалтер|подписал[аи]?|ответственный)\s*[:\-]?\s*([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)",
+        text,
+    )
+    for full_name in signer_match:
+        signers.append(SignerInfo(full_name=full_name))
+    return signers[:50]
 
 
 def _normalize_name(name: str | None) -> str | None:
@@ -274,30 +340,26 @@ def apply_learning_hints(doc: ExtractedDocument, samples: list[TrainingSample]) 
 def extract_fields(filename: str, text: str) -> ExtractedDocument:
     doc_type = detect_document_type(text)
 
-    supplier = CompanyInfo(
-        name=_first(r"(?:поставщик|исполнитель)\s*[:\-]\s*(.+)", text),
-        inn=_first(r"(?:инн\s*(?:поставщика|исполнителя)?\s*[:\-]?\s*)(\d{10,12})", text),
-        kpp=_first(r"(?:кпп\s*(?:поставщика|исполнителя)?\s*[:\-]?\s*)(\d{9})", text),
-    )
+    supplier_name = _first(r"(?:поставщик|исполнитель|продавец)\s*[:\-]?\s*(.+)", text)
+    buyer_name = _first(r"(?:покупатель|заказчик)\s*[:\-]?\s*(.+)", text)
 
-    buyer = CompanyInfo(
-        name=_first(r"(?:покупатель|заказчик)\s*[:\-]\s*(.+)", text),
-        inn=_first(r"(?:инн\s*(?:покупателя|заказчика)?\s*[:\-]?\s*)(\d{10,12})", text),
-        kpp=_first(r"(?:кпп\s*(?:покупателя|заказчика)?\s*[:\-]?\s*)(\d{9})", text),
-    )
+    supplier_inn, supplier_kpp = _extract_inn_kpp_pair(text, r"(?:продавец|поставщик|исполнитель)")
+    buyer_inn, buyer_kpp = _extract_inn_kpp_pair(text, r"(?:покупатель|заказчик)")
 
-    items = []
-    for line in text.splitlines():
-        if re.search(r"\d+[\.,]?\d*\s*x\s*\d+[\.,]?\d*", line, flags=re.IGNORECASE):
-            items.append(ItemInfo(name=line.strip()))
+    if not supplier_inn:
+        supplier_inn = _first(r"(?:инн\s*(?:продавца|поставщика|исполнителя)?\s*[:\-]?\s*)(\d{10,12})", text)
+    if not supplier_kpp:
+        supplier_kpp = _first(r"(?:кпп\s*(?:продавца|поставщика|исполнителя)?\s*[:\-]?\s*)(\d{9})", text)
+    if not buyer_inn:
+        buyer_inn = _first(r"(?:инн\s*(?:покупателя|заказчика)?\s*[:\-]?\s*)(\d{10,12})", text)
+    if not buyer_kpp:
+        buyer_kpp = _first(r"(?:кпп\s*(?:покупателя|заказчика)?\s*[:\-]?\s*)(\d{9})", text)
 
-    signers = []
-    signer_match = re.findall(
-        r"(?:руководитель|директор|главный бухгалтер|подписал[аи]?)\s*[:\-]?\s*([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)",
-        text,
-    )
-    for full_name in signer_match:
-        signers.append(SignerInfo(full_name=full_name))
+    supplier = CompanyInfo(name=supplier_name, inn=supplier_inn, kpp=supplier_kpp)
+    buyer = CompanyInfo(name=buyer_name, inn=buyer_inn, kpp=buyer_kpp)
+
+    items = _extract_items(text)
+    signers = _extract_signers(text)
 
     return ExtractedDocument(
         id=str(uuid.uuid4()),
@@ -305,8 +367,8 @@ def extract_fields(filename: str, text: str) -> ExtractedDocument:
         document_type=doc_type,
         supplier=supplier,
         buyer=buyer,
-        items=items[:200],
-        signers=signers[:50],
+        items=items,
+        signers=signers,
         raw_text_excerpt=text[:3000],
         created_at=datetime.utcnow(),
     )
