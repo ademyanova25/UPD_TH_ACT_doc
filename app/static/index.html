@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Реестр первичных документов</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Реестр первичных документов</h1>
+    <p>Загрузка PDF, распознавание и обучение на ваших правках</p>
+  </header>
+
+  <main class="layout">
+    <section class="card">
+      <h2>1) Загрузка файла</h2>
+      <form id="upload-form">
+        <label class="file-input">
+          <input id="pdf-file" type="file" accept="application/pdf" multiple />
+          <span>📄 Выбрать PDF</span>
+        </label>
+
+        <div id="dropzone" class="dropzone">
+          Перетащите PDF сюда (drag & drop) — файлы автоматически добавятся в список ниже.
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary">Распознать первый из списка</button>
+          <button id="recognize-all" type="button" class="btn">Распознать документы</button>
+        </div>
+      </form>
+
+      <div class="progress-wrap">
+        <div class="progress-head">
+          <strong>Прогресс распознавания:</strong>
+          <span id="progress-label">0%</span>
+        </div>
+        <progress id="batch-progress" max="100" value="0"></progress>
+        <ul id="recognition-log" class="status-log"></ul>
+      </div>
+
+      <h3>Прикреплённые документы (до распознавания)</h3>
+      <ul id="pending-files" class="pending-list"></ul>
+
+      <p id="status"></p>
+    </section>
+
+    <section class="card">
+      <h2>2) Результат распознавания (можно править)</h2>
+      <div class="grid-two">
+        <label>Тип документа
+          <select id="document_type">
+            <option>УПД</option>
+            <option>ТОРГ-12</option>
+            <option>Акт оказания услуг</option>
+            <option>Неизвестно</option>
+          </select>
+        </label>
+        <label>Файл
+          <input id="filename" type="text" />
+        </label>
+      </div>
+
+      <h3>Поставщик</h3>
+      <div class="grid-four">
+        <input id="supplier_name" placeholder="Название" />
+        <input id="supplier_inn" placeholder="ИНН" />
+        <input id="supplier_kpp" placeholder="КПП" />
+        <input id="supplier_address" placeholder="Адрес" />
+      </div>
+
+      <h3>Покупатель</h3>
+      <div class="grid-four">
+        <input id="buyer_name" placeholder="Название" />
+        <input id="buyer_inn" placeholder="ИНН" />
+        <input id="buyer_kpp" placeholder="КПП" />
+        <input id="buyer_address" placeholder="Адрес" />
+      </div>
+
+      <h3>Позиции (шаблон таблицы)</h3>
+      <table>
+        <thead>
+          <tr><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr>
+        </thead>
+        <tbody id="items-body">
+          <tr><td><input /></td><td><input /></td><td><input /></td><td><input /></td></tr>
+          <tr><td><input /></td><td><input /></td><td><input /></td><td><input /></td></tr>
+          <tr><td><input /></td><td><input /></td><td><input /></td><td><input /></td></tr>
+        </tbody>
+      </table>
+
+      <label>Комментарий для обучения
+        <textarea id="reviewer_comment" rows="3" placeholder="Например: неверно определён покупатель, исправил ИНН и состав позиций"></textarea>
+      </label>
+
+      <div class="actions">
+        <button id="save-training" class="btn">Сохранить правки (в реестр + обучение)</button>
+        <button id="load-docs" class="btn">Обновить реестр документов</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3) Реестр документов</h2>
+      <ul id="documents-list"></ul>
+      <h2>4) Набор для обучения</h2>
+      <ul id="training-list"></ul>
+      <a class="btn" href="/training/export" target="_blank">Скачать JSONL для обучения</a>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
